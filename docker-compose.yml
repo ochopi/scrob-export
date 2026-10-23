@@ -7,6 +7,8 @@ services:
     ports:
       # Puerto externo configurable; el interno es siempre 7329
       - "${HOST_PORT:-7329}:7329"
+    volumes:
+      - ${DATA_PATH:?Define DATA_PATH}:/app:ro
     environment:
       TZ: ${TZ:-UTC}
       SCROB_URL: ${SCROB_URL:?Define SCROB_URL}
