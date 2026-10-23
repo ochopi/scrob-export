@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scrob Export</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a; --text:#e7e9ee;
+    --muted:#8b93a3; --accent:#7c9cff; --accent2:#5b7be0; --ok:#4ade80; --warn:#fbbf24; --err:#f87171;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f6f8; --panel:#fff; --panel2:#eef0f4; --line:#d9dce3; --text:#1b1e26; --muted:#667085; --accent:#3b5bdb; --accent2:#2f49b3; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:16px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  h1 { font-size:20px; margin:0; }
+  #status { font-size:13px; color:var(--muted); }
+  #status.ok::before { content:"● "; color:var(--ok); }
+  #status.bad::before { content:"● "; color:var(--err); }
+  nav { display:flex; gap:6px; overflow-x:auto; padding-bottom:6px; }
+  nav button { background:var(--panel); color:var(--muted); border:1px solid var(--line); border-radius:8px; padding:8px 14px; cursor:pointer; white-space:nowrap; font:inherit; }
+  nav button.on { color:var(--text); border-color:var(--accent); background:var(--panel2); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-top:10px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  label { font-size:13px; color:var(--muted); }
+  input, select, textarea { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:inherit; }
+  input[type=checkbox] { width:auto; accent-color:var(--accent); }
+  textarea { width:100%; }
+  .chip { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; font:inherit; font-size:13px; }
+  .chip.on { border-color:var(--accent); color:var(--accent); }
+  .primary { background:var(--accent2); color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; font:inherit; font-weight:600; }
+  .primary:hover { background:var(--accent); }
+  .primary:disabled { opacity:.5; cursor:wait; }
+  .ghost { background:transparent; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:9px 14px; cursor:pointer; font:inherit; }
+  #out { min-height:220px; max-height:55vh; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre; overflow:auto; }
+  .meta { font-size:12px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap; margin:8px 0; }
+  .warn { color:var(--warn); } .err { color:var(--err); }
+  .hint { font-size:12px; color:var(--muted); margin:4px 0 0; }
+  .pane { display:none; } .pane.on { display:block; }
+  .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:var(--ok); color:#06210f; padding:10px 18px; border-radius:999px; font-weight:600; opacity:0; pointer-events:none; transition:opacity .2s; }
+  .toast.show { opacity:1; }
+  .sbox { position:relative; width:100%; }
+  .sbox input { width:100%; }
+  #sugg { position:absolute; left:0; right:0; top:100%; z-index:5; margin-top:4px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; overflow:hidden; display:none; }
+  #sugg.on { display:block; }
+  #sugg div { padding:8px 12px; cursor:pointer; display:flex; justify-content:space-between; gap:12px; }
+  #sugg div:hover, #sugg div.sel { background:var(--line); }
+  #sugg small { color:var(--muted); white-space:nowrap; }
+  .hide { display:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Scrob Export</h1>
+    <span id="status">comprobando…</span>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="current" class="on">En curso</button>
+    <button data-tab="history">Historial</button>
+    <button data-tab="series">Una serie</button>
+    <button data-tab="upcoming">Estrenos</button>
+    <button data-tab="bundle">Paquete</button>
+    <button data-tab="diag">Diagnóstico</button>
+  </nav>
+
+  <div class="card">
+    <!-- En curso -->
+    <div class="pane on" id="p-current">
+      <div class="row">
+        <label>Actividad en los últimos</label>
+        <select id="cur-days">
+          <option value="7">7 días</option><option value="30">30 días</option><option value="60">60 días</option>
+          <option value="90" selected>90 días</option><option value="180">6 meses</option>
+          <option value="365">1 año</option><option value="0">Todo</option>
+        </select>
+        <label><input type="checkbox" id="cur-next"> incluir «próximo a ver» (puede dar spoilers)</label>
+      </div>
+      <button class="primary" data-run="current">Obtener y copiar</button>
+      <p class="hint">Series con episodios por ver y su último episodio visto. Las terminadas no aparecen (están en el Historial).</p>
+    </div>
+
+    <!-- Historial -->
+    <div class="pane" id="p-history">
+      <div class="row chips" data-range="h">
+        <button class="chip" data-d="1">1 día</button>
+        <button class="chip on" data-d="7">7 días</button>
+        <button class="chip" data-d="30">30 días</button>
+        <button class="chip" data-d="90">90 días</button>
+        <button class="chip" data-d="365">1 año</button>
+        <button class="chip" data-d="0">Todo</button>
+      </div>
+      <div class="row">
+        <label>Desde <input type="date" id="h-from"></label>
+        <label>Hasta <input type="date" id="h-to"></label>
+        <label>Formato
+          <select id="h-fmt"><option value="compact">Compacto (por serie)</option><option value="detailed">Detallado (por día)</option></select>
+        </label>
+      </div>
+      <button class="primary" data-run="history">Obtener y copiar</button>
+      <p class="hint">Rangos largos: usa Compacto. “Todo” recorre todo el historial (puede tardar unos segundos).</p>
+    </div>
+
+    <!-- Serie -->
+    <div class="pane" id="p-series">
+      <div class="row">
+        <div class="sbox">
+          <input id="s-q" autocomplete="off" placeholder="Escribe parte del nombre (ej. Slime)">
+          <div id="sugg"></div>
+        </div>
+      </div>
+      <button class="primary" data-run="series">Obtener y copiar</button>
+      <p class="hint">Si lo dejas libre, trae todo lo que coincida. Si eliges una sugerencia, solo esa serie o película.</p>
+    </div>
+
+    <!-- Estrenos -->
+    <div class="pane" id="p-upcoming">
+      <div class="row">
+        <label>Periodo</label>
+        <select id="u-range">
+          <option value="-1:-1">Ayer</option><option value="0:0">Hoy</option><option value="1:1">Mañana</option>
+          <option value="0:7" selected>7 días</option><option value="0:14">14 días</option>
+        </select>
+      </div>
+      <button class="primary" data-run="upcoming">Obtener y copiar</button>
+    </div>
+
+    <!-- Paquete -->
+    <div class="pane" id="p-bundle">
+      <div class="row">
+        <label><input type="checkbox" id="b-cur" checked> En curso (usa los ajustes de su pestaña)</label>
+        <label><input type="checkbox" id="b-hist" checked> Historial</label>
+        <label><input type="checkbox" id="b-up"> Estrenos (usa los ajustes de su pestaña)</label>
+      </div>
+      <div id="b-histopts">
+        <div class="row chips" data-range="b">
+          <button class="chip" data-d="1">1 día</button>
+          <button class="chip on" data-d="7">7 días</button>
+          <button class="chip" data-d="30">30 días</button>
+          <button class="chip" data-d="90">90 días</button>
+          <button class="chip" data-d="365">1 año</button>
+          <button class="chip" data-d="0">Todo</button>
+        </div>
+        <div class="row">
+          <label>Desde <input type="date" id="b-from"></label>
+          <label>Hasta <input type="date" id="b-to"></label>
+          <label>Formato
+            <select id="b-fmt"><option value="compact">Compacto</option><option value="detailed">Detallado</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="row">
+        <button class="ghost" id="b-toggle">Editar encabezado anti-spoilers</button>
+      </div>
+      <div id="b-headwrap" class="hide">
+        <textarea id="b-head" rows="4"></textarea>
+        <div class="row" style="margin-top:8px"><button class="ghost" id="b-reset">Restaurar encabezado</button></div>
+      </div>
+      <button class="primary" data-run="bundle">Armar y copiar paquete</button>
+      <p class="hint">El encabezado se antepone siempre, aunque esté oculto. Se guarda en este navegador.</p>
+    </div>
+
+    <!-- Diagnóstico -->
+    <div class="pane" id="p-diag">
+      <div class="row"><select id="d-name"></select></div>
+      <button class="primary" data-run="diag">Ver respuesta cruda y copiar</button>
+      <p class="hint">Si algún bloque sale con campos vacíos, pega aquí la respuesta cruda en el chat para ajustar el lector.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="meta" id="meta"><span>Sin resultado todavía</span></div>
+    <textarea id="out" readonly placeholder="El resultado aparece aquí."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="copy-again">Copiar de nuevo</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast">Copiado</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const DEFAULT_HEAD =
+`Contexto: esto es lo que he visto hasta ahora. NO reveles nada posterior a estos episodios (ni tramas, ni personajes, ni finales). Si no estás seguro de si algo es spoiler, pregúntame antes. La numeración de temporadas/episodios sigue la base de datos TMDB.`;
+
+let lastText = "";
+
+function pad(n){ return String(n).padStart(2,"0"); }
+function iso(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
+
+// selector de rango reutilizable (prefijo "h" = historial, "b" = paquete)
+function bindRange(pfx) {
+  const chips = document.querySelectorAll('[data-range="' + pfx + '"] .chip');
+  const setRange = (days) => {
+    const to = new Date(), from = new Date();
+    if (days === 0) from.setFullYear(2000, 0, 1); else from.setDate(to.getDate() - (days - 1));
+    $("#" + pfx + "-from").value = iso(from); $("#" + pfx + "-to").value = iso(to);
+  };
+  chips.forEach(b => b.onclick = () => {
+    chips.forEach(x => x.classList.remove("on")); b.classList.add("on"); setRange(+b.dataset.d);
+  });
+  ["from", "to"].forEach(k => $("#" + pfx + "-" + k).onchange = () => chips.forEach(x => x.classList.remove("on")));
+  setRange(7);
+}
+bindRange("h"); bindRange("b");
+
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.remove("on"));
+  document.querySelectorAll(".pane").forEach(x => x.classList.remove("on"));
+  b.classList.add("on"); $("#p-" + b.dataset.tab).classList.add("on");
+});
+
+async function api(path, params) {
+  const qs = new URLSearchParams(params || {}).toString();
+  const r = await fetch(path + (qs ? "?" + qs : ""));
+  const j = await r.json().catch(() => ({ error: "Respuesta inválida del servidor" }));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) {
+    try {
+      const ta = $("#out"); ta.removeAttribute("readonly"); ta.focus(); ta.select();
+      const ok = document.execCommand("copy"); ta.setAttribute("readonly", ""); return ok;
+    } catch (e2) { return false; }
+  }
+}
+function toast(msg, bad) {
+  const t = $("#toast"); t.textContent = msg; t.style.background = bad ? "var(--err)" : "var(--ok)";
+  t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800);
+}
+
+function show(res) {
+  const text = res.text || "";
+  lastText = text; $("#out").value = text;
+  const chars = res.chars != null ? res.chars : text.length;
+  const tokens = res.tokens != null ? res.tokens : Math.round(chars / 3.6);
+  const m = $("#meta"); m.innerHTML = "";
+  const add = (t, c) => { const s = document.createElement("span"); s.textContent = t; if (c) s.className = c; m.appendChild(s); };
+  add(chars.toLocaleString("es") + " caracteres");
+  add("≈ " + tokens.toLocaleString("es") + " tokens");
+  if (res.count != null) add(res.count + " registros");
+  if (tokens > 12000) add("Texto muy largo: considera formato Compacto o un rango menor", "warn");
+  (res.warnings || []).forEach(w => add("⚠ " + w, "warn"));
+}
+
+// sugerencias de la pestaña "Una serie"
+let sExact = false, sTimer = null, sSel = -1, sItems = [];
+function hideSugg() { $("#sugg").classList.remove("on"); sSel = -1; }
+function pickSugg(i) {
+  const it = sItems[i]; if (!it) return;
+  $("#s-q").value = it.name; sExact = true; hideSugg();
+}
+function renderSugg(items) {
+  sItems = items; const box = $("#sugg"); box.innerHTML = "";
+  if (!items.length) { hideSugg(); return; }
+  items.forEach((it, i) => {
+    const d = document.createElement("div");
+    const n = document.createElement("span"); n.textContent = it.name;
+    const k = document.createElement("small"); k.textContent = it.kind + " · " + it.count;
+    d.append(n, k); d.onmousedown = (e) => { e.preventDefault(); pickSugg(i); };
+    box.appendChild(d);
+  });
+  box.classList.add("on"); sSel = -1;
+}
+$("#s-q").addEventListener("input", () => {
+  sExact = false; clearTimeout(sTimer);
+  const q = $("#s-q").value.trim();
+  if (q.length < 2) { hideSugg(); return; }
+  sTimer = setTimeout(async () => {
+    try { const j = await api("/api/suggest", { q }); if ($("#s-q").value.trim() === q) renderSugg(j.items || []); }
+    catch (e) { hideSugg(); }
+  }, 200);
+});
+$("#s-q").addEventListener("keydown", (e) => {
+  const rows = [...document.querySelectorAll("#sugg div")];
+  if (!rows.length || !$("#sugg").classList.contains("on")) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); sSel = (sSel + (e.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+    rows.forEach((r, i) => r.classList.toggle("sel", i === sSel));
+  } else if (e.key === "Enter" && sSel >= 0) { e.preventDefault(); pickSugg(sSel); }
+  else if (e.key === "Escape") hideSugg();
+});
+$("#s-q").addEventListener("blur", () => setTimeout(hideSugg, 120));
+
+async function build(kind) {
+  if (kind === "current")
+    return api("/api/current", { days: $("#cur-days").value, next: $("#cur-next").checked ? 1 : 0 });
+  if (kind === "history")
+    return api("/api/history", { from: $("#h-from").value, to: $("#h-to").value, format: $("#h-fmt").value });
+  if (kind === "series") return api("/api/series", { q: $("#s-q").value, exact: sExact ? 1 : 0 });
+  if (kind === "upcoming") {
+    const [a, b] = $("#u-range").value.split(":");
+    return api("/api/upcoming", { from_off: a, to_off: b });
+  }
+  if (kind === "diag") return api("/api/raw", { name: $("#d-name").value });
+  if (kind === "bundle") {
+    const parts = [], warnings = [];
+    const head = $("#b-head").value.trim();
+    if (head) parts.push(head);
+    const jobs = [];
+    if ($("#b-cur").checked) jobs.push(build("current"));
+    if ($("#b-hist").checked)
+      jobs.push(api("/api/history", { from: $("#b-from").value, to: $("#b-to").value, format: $("#b-fmt").value }));
+    if ($("#b-up").checked) jobs.push(build("upcoming"));
+    for (const r of await Promise.all(jobs)) { parts.push(r.text); warnings.push(...(r.warnings || [])); }
+    const text = parts.join("\n\n---\n\n");
+    return { text, chars: text.length, tokens: Math.round(text.length / 3.6), count: null, warnings };
+  }
+}
+
+document.querySelectorAll("[data-run]").forEach(btn => btn.onclick = async () => {
+  const kind = btn.dataset.run; btn.disabled = true; const old = btn.textContent; btn.textContent = "Consultando…";
+  try {
+    const res = await build(kind); show(res);
+    toast((await copyText(res.text)) ? "Copiado al portapapeles" : "No se pudo copiar (¿HTTPS?)", false);
+  } catch (e) {
+    $("#out").value = ""; $("#meta").innerHTML = ""; const s = document.createElement("span");
+    s.className = "err"; s.textContent = "Error: " + e.message; $("#meta").appendChild(s); toast("Error", true);
+  } finally { btn.disabled = false; btn.textContent = old; }
+});
+
+$("#copy-again").onclick = async () => toast((await copyText(lastText)) ? "Copiado" : "No se pudo copiar", false);
+
+// encabezado anti-spoiler: oculto por defecto, persistente y siempre aplicado
+try { $("#b-head").value = localStorage.getItem("scrobExportHead") || DEFAULT_HEAD; } catch (e) { $("#b-head").value = DEFAULT_HEAD; }
+$("#b-head").oninput = () => { try { localStorage.setItem("scrobExportHead", $("#b-head").value); } catch (e) {} };
+$("#b-reset").onclick = () => { $("#b-head").value = DEFAULT_HEAD; try { localStorage.removeItem("scrobExportHead"); } catch (e) {} };
+$("#b-toggle").onclick = () => {
+  const w = $("#b-headwrap"); const hidden = w.classList.toggle("hide");
+  $("#b-toggle").textContent = hidden ? "Editar encabezado anti-spoilers" : "Ocultar encabezado";
+};
+$("#b-hist").onchange = () => $("#b-histopts").classList.toggle("hide", !$("#b-hist").checked);
+
+["history","next-up","continue-watching","progress","calendar","ratings","shows","lists"].forEach(n => {
+  const o = document.createElement("option"); o.value = n; o.textContent = n; $("#d-name").appendChild(o);
+});
+
+api("/api/status").then(() => { $("#status").textContent = "conectado a Scrob"; $("#status").className = "ok"; })
+  .catch(e => { $("#status").textContent = e.message; $("#status").className = "bad"; });
+</script>
+</body>
+</html>

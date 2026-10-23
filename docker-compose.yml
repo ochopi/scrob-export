@@ -1,0 +1,20 @@
+services:
+  scrob-export:
+    container_name: scrob-export
+    build: .
+    image: scrob-export:local
+    restart: unless-stopped
+    ports:
+      # Puerto externo configurable; el interno es siempre 7329
+      - "${HOST_PORT:-7329}:7329"
+    environment:
+      TZ: ${TZ:-UTC}
+      SCROB_URL: ${SCROB_URL:?Define SCROB_URL}
+      SCROB_USERNAME: ${SCROB_USERNAME:?Define SCROB_USERNAME}
+      SCROB_PASSWORD: ${SCROB_PASSWORD:?Define SCROB_PASSWORD}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7329/health', timeout=4).status == 200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
