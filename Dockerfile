@@ -5,6 +5,7 @@ RUN apk add --no-cache tzdata
 
 WORKDIR /app
 COPY app/ /app/
+RUN chmod -R a+rX /app
 
 ENV PORT=7329 \
     TZ=UTC \
