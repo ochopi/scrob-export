@@ -7,6 +7,8 @@ services:
     ports:
       # Published port is configurable; the container always listens on 7329
       - "${HOST_PORT:-7329}:7329"
+    volumes:
+      - ${APP_PATH:?Set APP_PATH}:/app:ro
     environment:
       TZ: ${TZ:-UTC}
       SCROB_URL: ${SCROB_URL:?Set SCROB_URL}
