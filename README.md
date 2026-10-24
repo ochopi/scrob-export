@@ -10,11 +10,11 @@ Python standard library only, no dependencies.
 
 | Tab | What it copies |
 | --- | --- |
-| Currently watching (*En curso*) | Shows you still have episodes left in: last watched episode (S/E, title, date) and progress. Finished shows are omitted. Window: 7, 15, 30, 60, 90 days, 6 months, 1 year or everything. Optional "next up" list (may contain episode-title spoilers) that uses the same window. |
-| History (*Historial*) | Date range (quick chips or from/to pickers). Compact (one line per show) or detailed (per day) format. |
-| Single title (*Una serie*) | Everything you watched of a show or movie, with search-as-you-type suggestions. Pick a suggestion (arrows + Enter) to filter to exactly that title; leave the text free to get everything that matches. Enter runs the query. |
-| Upcoming (*Estrenos*) | Yesterday, today, tomorrow, 3 days (yesterday to tomorrow), 7 or 14 days, from Scrob's calendar. |
-| Bundle (*Paquete*) | An editable anti-spoiler header (hidden by default, always prepended) plus whichever blocks you tick, in a single copy. Each block has its own options, shown only while its checkbox is ticked. |
+| Search (*Buscar*) | Everything you watched of a show or movie, with search-as-you-type suggestions. Pick a suggestion (arrows + Enter) to filter to exactly that title; leave the text free to get everything that matches. Enter runs the query. |
+| Currently watching (*En curso*) | Shows you still have aired, unwatched episodes in: last watched episode (S/E, title, date) and progress. Finished shows are omitted. Window: 1 week, 2 weeks (default), 1 month, 60 days, 3 months, 6 months, 1 year or everything. Optional "next up" list (aired episodes only; may contain episode-title spoilers) that uses the same window. |
+| History (*Historial*) | Period dropdown (1 day to everything, default 2 weeks); choosing *Custom* reveals a from/to date picker. The *Detallado* checkbox switches from compact (one line per show) to detailed (per day). |
+| Upcoming (*Estrenos*) | Yesterday, today, tomorrow, 3 days (yesterday to tomorrow), 1 or 2 weeks (default), from Scrob's calendar. |
+| Bundle (*Paquete*, opens by default) | An editable anti-spoiler header (hidden by default, always prepended) plus whichever blocks you tick, in a single copy. Each block has its own options, shown only while its checkbox is ticked. Defaults: current 2 weeks, history 1 week, upcoming 1 week. |
 | Diagnostics (*Diagnóstico*) | Trimmed raw response of each Scrob endpoint, for debugging. |
 
 Every result shows its size in characters and approximate tokens, with a warning when it gets very long.

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scrob Export</title>
+<link rel="icon" type="image/svg+xml" href="https://cdn.jsdelivr.net/gh/selfhst/icons/svg/scrob-light.svg">
 <style>
   :root {
     --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a; --text:#e7e9ee;
@@ -29,8 +30,6 @@
   input, select, textarea { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:inherit; }
   input[type=checkbox] { width:auto; accent-color:var(--accent); }
   textarea { width:100%; }
-  .chip { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:999px; padding:5px 12px; cursor:pointer; font:inherit; font-size:13px; }
-  .chip.on { border-color:var(--accent); color:var(--accent); }
   .primary { background:var(--accent2); color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; font:inherit; font-weight:600; }
   .primary:hover { background:var(--accent); }
   .primary:disabled { opacity:.5; cursor:wait; }
@@ -63,21 +62,21 @@
   </header>
 
   <nav id="tabs">
-    <button data-tab="current" class="on">En curso</button>
+    <button data-tab="series">Buscar</button>
+    <button data-tab="current">En curso</button>
     <button data-tab="history">Historial</button>
-    <button data-tab="series">Una serie</button>
     <button data-tab="upcoming">Estrenos</button>
-    <button data-tab="bundle">Paquete</button>
+    <button data-tab="bundle" class="on">Paquete</button>
     <button data-tab="diag">Diagnóstico</button>
   </nav>
 
   <div class="card">
     <!-- Currently watching -->
-    <div class="pane on" id="p-current">
+    <div class="pane" id="p-current">
       <div class="row">
         <label>Actividad en los últimos</label>
         <select id="cur-days"></select>
-        <label><input type="checkbox" id="cur-next"> incluir «próximo a ver» (puede dar spoilers)</label>
+        <label><input type="checkbox" id="cur-next"> incluir «próximo a ver» (puede contener spoilers)</label>
       </div>
       <button class="primary" data-run="current">Obtener y copiar</button>
       <p class="hint">Series con episodios por ver y su último episodio visto. Las terminadas no aparecen (están en el Historial). «Próximo a ver» respeta el mismo intervalo.</p>
@@ -85,35 +84,28 @@
 
     <!-- History -->
     <div class="pane" id="p-history">
-      <div class="row chips" data-range="h">
-        <button class="chip" data-d="1">1 día</button>
-        <button class="chip on" data-d="7">7 días</button>
-        <button class="chip" data-d="30">30 días</button>
-        <button class="chip" data-d="90">90 días</button>
-        <button class="chip" data-d="365">1 año</button>
-        <button class="chip" data-d="0">Todo</button>
-      </div>
       <div class="row">
+        <label>Periodo</label>
+        <select id="h-range"></select>
+        <label><input type="checkbox" id="h-det"> Detallado</label>
+      </div>
+      <div class="row hide" id="h-custom">
         <label>Desde <input type="date" id="h-from"></label>
         <label>Hasta <input type="date" id="h-to"></label>
-        <label>Formato
-          <select id="h-fmt"><option value="compact">Compacto (por serie)</option><option value="detailed">Detallado (por día)</option></select>
-        </label>
       </div>
       <button class="primary" data-run="history">Obtener y copiar</button>
-      <p class="hint">Rangos largos: usa Compacto. “Todo” recorre todo el historial (puede tardar unos segundos).</p>
+      <p class="hint">Periodos grandes recorren todo el historial (puede tardar varios segundos).</p>
     </div>
 
-    <!-- Single title -->
+    <!-- Search (single title) -->
     <div class="pane" id="p-series">
       <div class="row">
         <div class="sbox">
-          <input id="s-q" autocomplete="off" placeholder="Escribe parte del nombre de la serie o película">
+          <input id="s-q" autocomplete="off" placeholder="Escribe parte del nombre de la serie o película que deseas buscar en el historial">
           <div id="sugg"></div>
         </div>
       </div>
       <button class="primary" data-run="series">Obtener y copiar</button>
-      <p class="hint">Si lo dejas libre, trae todo lo que coincida. Si eliges una sugerencia (flechas + Enter), solo esa serie o película. Enter sin sugerencia seleccionada ejecuta la consulta.</p>
     </div>
 
     <!-- Upcoming -->
@@ -126,7 +118,7 @@
     </div>
 
     <!-- Bundle: everything it needs lives here -->
-    <div class="pane" id="p-bundle">
+    <div class="pane on" id="p-bundle">
       <div class="row"><label><input type="checkbox" id="b-cur" checked> En curso</label></div>
       <div class="sub" id="b-curopts">
         <div class="row">
@@ -138,24 +130,18 @@
 
       <div class="row"><label><input type="checkbox" id="b-hist" checked> Historial</label></div>
       <div class="sub" id="b-histopts">
-        <div class="row chips" data-range="b">
-          <button class="chip" data-d="1">1 día</button>
-          <button class="chip on" data-d="7">7 días</button>
-          <button class="chip" data-d="30">30 días</button>
-          <button class="chip" data-d="90">90 días</button>
-          <button class="chip" data-d="365">1 año</button>
-          <button class="chip" data-d="0">Todo</button>
-        </div>
         <div class="row">
+          <label>Periodo</label>
+          <select id="b-range"></select>
+          <label><input type="checkbox" id="b-det"> Detallado</label>
+        </div>
+        <div class="row hide" id="b-custom">
           <label>Desde <input type="date" id="b-from"></label>
           <label>Hasta <input type="date" id="b-to"></label>
-          <label>Formato
-            <select id="b-fmt"><option value="compact">Compacto</option><option value="detailed">Detallado</option></select>
-          </label>
         </div>
       </div>
 
-      <div class="row"><label><input type="checkbox" id="b-up"> Estrenos</label></div>
+      <div class="row"><label><input type="checkbox" id="b-up" checked> Estrenos</label></div>
       <div class="sub hide" id="b-upopts">
         <div class="row">
           <label>Periodo</label>
@@ -164,14 +150,14 @@
       </div>
 
       <div class="row">
-        <button class="ghost" id="b-toggle">Editar encabezado anti-spoilers</button>
+        <button class="ghost" id="b-toggle">Editar encabezado (para IA)</button>
+        <p class="hint">El encabezado se incluye siempre, aunque esté oculto. Se guarda en el navegador.</p>
       </div>
       <div id="b-headwrap" class="hide">
         <textarea id="b-head" rows="4"></textarea>
         <div class="row" style="margin-top:8px"><button class="ghost" id="b-reset">Restaurar encabezado</button></div>
       </div>
       <button class="primary" data-run="bundle">Armar y copiar paquete</button>
-      <p class="hint">El encabezado se antepone siempre, aunque esté oculto. Se guarda en este navegador.</p>
     </div>
 
     <!-- Diagnostics -->
@@ -199,37 +185,41 @@ const DEFAULT_HEAD =
 
 // Option lists shared by the standalone tabs and the bundle tab.
 // Days: 0 = whole history. Upcoming: "fromOffset:toOffset" in days relative to today.
-const CUR_OPTS = [[7, "7 días"], [15, "15 días"], [30, "30 días"], [60, "60 días"], [90, "90 días"],
+const CUR_OPTS = [[7, "1 sem"], [14, "2 sem"], [30, "1 mes"], [60, "2 meses"], [90, "3 meses"],
                   [180, "6 meses"], [365, "1 año"], [0, "Todo"]];
-const UP_OPTS = [["-1:-1", "Ayer"], ["0:0", "Hoy"], ["1:1", "Mañana"], ["-1:1", "3 días"],
-                 ["0:7", "7 días"], ["0:14", "14 días"]];
+const UP_OPTS = [["-1:-1", "Ayer"], ["0:0", "Hoy"], ["1:1", "Mañana"], ["-1:1", "3 días (ayer a mañana)"],
+                 ["0:7", "1 sem"], ["0:14", "2 sem"]];
+// History ranges: number of days ending today (0 = everything), or "custom" to show the date pickers
+const HIST_OPTS = [[1, "1 día"], [3, "3 días"], [7, "1 sem"], [14, "2 sem"], [30, "1 mes"], [90, "3 meses"],
+                   [180, "6 meses"], [365, "1 año"], [0, "Todo"], ["custom", "Custom"]];
 function fill(sel, opts, selected) {
   opts.forEach(([v, label]) => {
     const o = document.createElement("option"); o.value = v; o.textContent = label;
     if (String(v) === String(selected)) o.selected = true; $(sel).appendChild(o);
   });
 }
-fill("#cur-days", CUR_OPTS, 90); fill("#bc-days", CUR_OPTS, 90);
-fill("#u-range", UP_OPTS, "0:7"); fill("#bu-range", UP_OPTS, "0:7");
+// Defaults: standalone tabs use 2 weeks; the bundle uses 2 weeks (current), 1 week (history, upcoming)
+fill("#cur-days", CUR_OPTS, 14); fill("#bc-days", CUR_OPTS, 14);
+fill("#u-range", UP_OPTS, "0:14"); fill("#bu-range", UP_OPTS, "0:7");
+fill("#h-range", HIST_OPTS, 14); fill("#b-range", HIST_OPTS, 7);
 
 let lastText = "";
 
 function pad(n){ return String(n).padStart(2,"0"); }
 function iso(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
 
-// Date-range picker with quick chips. pfx: "h" = History tab, "b" = Bundle tab.
+// Range dropdown. pfx: "h" = History tab, "b" = Bundle tab. A preset fills the (hidden) date inputs;
+// "Custom" reveals them, starting from the dates of the last preset.
 function bindRange(pfx) {
-  const chips = document.querySelectorAll('[data-range="' + pfx + '"] .chip');
-  const setRange = (days) => {
-    const to = new Date(), from = new Date();
+  const sel = $("#" + pfx + "-range"), box = $("#" + pfx + "-custom");
+  const apply = () => {
+    box.classList.toggle("hide", sel.value !== "custom");
+    if (sel.value === "custom") return;
+    const days = +sel.value, to = new Date(), from = new Date();
     if (days === 0) from.setFullYear(2000, 0, 1); else from.setDate(to.getDate() - (days - 1));
     $("#" + pfx + "-from").value = iso(from); $("#" + pfx + "-to").value = iso(to);
   };
-  chips.forEach(b => b.onclick = () => {
-    chips.forEach(x => x.classList.remove("on")); b.classList.add("on"); setRange(+b.dataset.d);
-  });
-  ["from", "to"].forEach(k => $("#" + pfx + "-" + k).onchange = () => chips.forEach(x => x.classList.remove("on")));
-  setRange(7);
+  sel.onchange = apply; apply();
 }
 bindRange("h"); bindRange("b");
 
@@ -276,7 +266,7 @@ function show(res) {
   (res.warnings || []).forEach(w => add("⚠ " + w, "warn"));
 }
 
-// ---- Search box with suggestions (Una serie tab) ----
+// ---- Search box with suggestions (Search tab) ----
 // sSeq invalidates in-flight suggestion requests whenever the text changes or a query is run.
 let sExact = false, sTimer = null, sSel = -1, sItems = [], sSeq = 0;
 function hideSugg() { $("#sugg").classList.remove("on"); sSel = -1; }
@@ -343,7 +333,8 @@ $("#s-q").addEventListener("blur", () => setTimeout(hideSugg, 120));
 const callCurrent = (p) => api("/api/current",
   { days: $("#" + p + "-days").value, next: $("#" + p + "-next").checked ? 1 : 0 });
 const callHistory = (p) => api("/api/history",
-  { from: $("#" + p + "-from").value, to: $("#" + p + "-to").value, format: $("#" + p + "-fmt").value });
+  { from: $("#" + p + "-from").value, to: $("#" + p + "-to").value,
+    format: $("#" + p + "-det").checked ? "detailed" : "compact" });
 const callUpcoming = (p) => {
   const [a, b] = $("#" + p + "-range").value.split(":");
   return api("/api/upcoming", { from_off: a, to_off: b });
