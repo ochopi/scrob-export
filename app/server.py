@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""scrob-export: resumen de Scrob listo para pegar en una IA.
+"""scrob-export: turn your Scrob watch data into plain text you can paste into an AI chat.
 
-Solo libreria estandar. Hace login web a Scrob (igual que scrob-calendar.sh),
-reutiliza la cookie de sesion y expone endpoints JSON + una pagina estatica.
+Standard library only. It logs in to Scrob through the web login form (the same
+way a browser does), keeps the session cookie, and serves a few JSON endpoints
+plus one static page.
 """
 import gzip
 import json
 import os
-import re
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from http.cookiejar import CookieJar
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,19 +25,25 @@ SCROB_PASSWORD = os.environ.get("SCROB_PASSWORD", "")
 PORT = int(os.environ.get("PORT", "7329"))
 try:
     TZ = ZoneInfo(os.environ.get("TZ") or "UTC")
-except Exception:  # zona invalida o sin tzdata: cae a UTC
+except Exception:  # unknown zone or no tzdata installed: fall back to UTC
     TZ = timezone.utc
-MAX_PAGES = int(os.environ.get("MAX_PAGES", "200"))  # 200 x 100 = 20.000 eventos
-CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))
+MAX_PAGES = int(os.environ.get("MAX_PAGES", "200"))  # 200 pages x 100 events = 20,000 events
+CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))  # seconds, per Scrob query
+FETCH_WORKERS = int(os.environ.get("FETCH_WORKERS", "6"))  # parallel history page fetches
+INDEX_TTL = 300  # seconds before the search-box title index is refreshed
+NEXT_UP_LIMIT = 500  # /history/next-up has no default limit; ask for "everything"
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+# Output text is Spanish on purpose: it is meant to be pasted into a Spanish-language chat.
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 
 
 # --------------------------------------------------------------------------
-# Cliente de Scrob (login por formulario + cookie de sesion)
+# Scrob client (web form login + session cookie)
 # --------------------------------------------------------------------------
 class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not follow redirects: a 302 is how Scrob tells us the session is gone."""
+
     def redirect_request(self, *a, **k):
         return None
 
@@ -53,12 +60,13 @@ class Scrob:
         )
         self.lock = threading.Lock()
         self.logged = False
+        self.gen = 0  # bumped on every login, so parallel requests renew the session only once
         self.cache = {}
 
     def _open(self, req, timeout=60):
         try:
             return self.opener.open(req, timeout=timeout)
-        except urllib.error.HTTPError as e:  # 3xx/4xx/5xx llegan como excepcion
+        except urllib.error.HTTPError as e:  # 3xx/4xx/5xx are raised; treat them as plain responses
             return e
 
     @staticmethod
@@ -69,6 +77,7 @@ class Scrob:
         return raw
 
     def login(self):
+        """Must be called with self.lock held."""
         if not SCROB_URL:
             raise ScrobError("Falta SCROB_URL en el entorno")
         if not SCROB_USERNAME or not SCROB_PASSWORD:
@@ -83,24 +92,27 @@ class Scrob:
         resp = self._open(req)
         code = resp.getcode()
         loc = resp.headers.get("Location", "")
+        # Success is a redirect away from /login; a redirect back to /login means bad credentials.
         if code != 302 or loc.rstrip("/").endswith("login"):
             raise ScrobError(f"Login rechazado por Scrob (HTTP {code}, Location={loc!r})")
         self.logged = True
+        self.gen += 1
 
-    def get(self, path, params=None, _retry=True):
+    def get(self, path, params=None, use_cache=True, _retry=True):
         qs = ""
         if params:
             qs = "?" + urllib.parse.urlencode(
                 {k: v for k, v in params.items() if v is not None}, doseq=True
             )
         url = f"{SCROB_URL}/api/proxy{path}{qs}"
-        key = url
-        hit = self.cache.get(key)
-        if hit and time.time() - hit[0] < CACHE_TTL:
-            return hit[1]
+        if use_cache:
+            hit = self.cache.get(url)
+            if hit and time.time() - hit[0] < CACHE_TTL:
+                return hit[1]
         with self.lock:
             if not self.logged:
                 self.login()
+            gen = self.gen
         req = urllib.request.Request(
             url, headers={"Accept": "application/json", "Accept-Encoding": "identity"}
         )
@@ -108,9 +120,9 @@ class Scrob:
         code = resp.getcode()
         if code in (301, 302, 401, 403) and _retry:
             with self.lock:
-                self.logged = False
-                self.login()
-            return self.get(path, params, _retry=False)
+                if self.gen == gen:  # nobody renewed the session in the meantime
+                    self.login()
+            return self.get(path, params, use_cache, _retry=False)
         body = self._body(resp)
         if code != 200:
             raise ScrobError(f"Scrob respondio HTTP {code} en {path}: {body[:200]!r}")
@@ -118,9 +130,10 @@ class Scrob:
             data = json.loads(body)
         except ValueError:
             raise ScrobError(f"Respuesta no-JSON en {path}: {body[:120]!r}")
-        self.cache[key] = (time.time(), data)
-        if len(self.cache) > 800:
-            self.cache.clear()
+        if use_cache:
+            if len(self.cache) > 300:
+                self.cache.clear()
+            self.cache[url] = (time.time(), data)
         return data
 
 
@@ -128,7 +141,8 @@ scrob = Scrob()
 
 
 # --------------------------------------------------------------------------
-# Extraccion tolerante (el OpenAPI de Scrob no describe los cuerpos de respuesta)
+# Tolerant field extraction. Scrob's OpenAPI does not describe response bodies,
+# so field names are looked up under several known/likely spellings.
 # --------------------------------------------------------------------------
 def dig(d, path):
     cur = d
@@ -140,6 +154,7 @@ def dig(d, path):
 
 
 def pick(d, *paths):
+    """First non-empty value among several dotted paths."""
     for p in paths:
         v = dig(d, p)
         if v not in (None, ""):
@@ -148,16 +163,17 @@ def pick(d, *paths):
 
 
 def items_of(resp):
+    """Find the list of rows inside a response, whatever the wrapper key is."""
     if isinstance(resp, list):
         return resp
     if isinstance(resp, dict):
         for k in ("items", "results", "events", "history", "data", "entries", "shows", "lists", "ratings"):
             if isinstance(resp.get(k), list):
                 return resp[k]
-        for v in resp.values():  # cualquier lista de objetos
+        for v in resp.values():  # any list of objects
             if isinstance(v, list) and v and isinstance(v[0], dict):
                 return v
-        for v in resp.values():  # un nivel mas abajo
+        for v in resp.values():  # one level deeper
             if isinstance(v, dict):
                 r = items_of(v)
                 if r:
@@ -166,11 +182,11 @@ def items_of(resp):
 
 
 def parse_dt(v):
+    """Parse an ISO timestamp. Naive values are UTC (that is what Scrob sends)."""
     if not v:
         return None
     try:
-        s = str(v).replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(TZ)
@@ -186,7 +202,7 @@ def to_int(v):
 
 
 def norm(e):
-    """Normaliza un evento/fila a un dict plano. Devuelve None si no es dict."""
+    """Flatten one event/row into a plain dict. Returns None if it is not a dict."""
     if not isinstance(e, dict):
         return None
     mtype = pick(e, "media_type", "type", "media.media_type", "media.type")
@@ -201,14 +217,17 @@ def norm(e):
                     "media.episode_title", "media.name", "tmdb_data.name", "media.tmdb_data.name")
     title = pick(e, "title", "name", "media.title", "media.name", "tmdb_data.title", "media.tmdb_data.title")
     year = pick(e, "year", "media.year")
+    if year is None:
+        release = pick(e, "release_date", "media.release_date")
+        year = str(release)[:4] if release else None
     when = parse_dt(pick(e, "watched_at", "created_at", "date", "timestamp", "media.watched_at"))
     is_ep = (str(mtype).lower() == "episode") or (season is not None and ep is not None)
     if is_ep and not show and title and ep_title and title != ep_title:
-        show = title  # algunos payloads ponen el show en "title"
+        show = title  # some payloads put the show name in "title"
     if is_ep and not show:
         show = title
     if is_ep and not ep_title and title and title != show:
-        ep_title = title
+        ep_title = title  # "title" holds the episode title when a show title is present
     return {
         "kind": "episode" if is_ep else "movie",
         "show": str(show) if show else None,
@@ -231,6 +250,7 @@ def fmt_short(d):
 
 
 def runs(nums):
+    """[1,2,3,5] -> 'E1-E3, E5'"""
     nums = sorted(set(nums))
     out, start, prev = [], None, None
     for n in nums:
@@ -247,6 +267,7 @@ def runs(nums):
 
 
 def season_runs(pairs):
+    """[(season, episode), ...] -> 'T1 E1-E12; T2 E1-E3' (season 0 = specials)"""
     by = {}
     for s, e in pairs:
         by.setdefault(s, set()).add(e)
@@ -263,43 +284,53 @@ def ep_label(n):
     return f"T{n['season']} E{n['episode']}"
 
 
+EPOCH = datetime.min.replace(tzinfo=timezone.utc)  # sort key for rows without a date
+
+
 # --------------------------------------------------------------------------
-# Historial paginado con rango de fechas
+# Paged history with a date range
 # --------------------------------------------------------------------------
-def fetch_history(d_from=None, d_to=None, q=None, max_pages=None):
-    """Devuelve (eventos_normalizados, avisos). Asume orden descendente por fecha."""
-    warnings, out = [], []
+def fetch_history(d_from=None, d_to=None, q=None, max_pages=None, use_cache=True):
+    """Return (normalized events, warnings) for the requested date range.
+
+    Scrob has no date filter on /history, so we page through it. Results come
+    newest-first, which lets us stop as soon as a whole page is older than
+    d_from. After the first page, more pages are fetched in parallel batches.
+    """
     limit = max_pages or MAX_PAGES
-    page = 1
-    while page <= limit:
-        resp = scrob.get("/history", {"page": page, "page_size": 100, "q": q})
-        rows = [norm(x) for x in items_of(resp)]
-        rows = [r for r in rows if r]
-        if not rows:
-            break
-        newest_in_range = False
+    out, warnings = [], []
+
+    def load(page):
+        resp = scrob.get("/history", {"page": page, "page_size": 100, "q": q}, use_cache=use_cache)
+        return resp, [r for r in map(norm, items_of(resp)) if r]
+
+    def consume(rows):
+        """Keep the rows inside the range. Return True once the range is exhausted."""
         for r in rows:
-            w = r["when"]
-            d = w.date() if w else None
-            if d is None:
+            d = r["when"].date() if r["when"] else None
+            if d is None or ((not d_to or d <= d_to) and (not d_from or d >= d_from)):
                 out.append(r)
-                continue
-            if d_to and d > d_to:
-                newest_in_range = True  # todavia mas nuevo que el rango; sigue paginando
-                continue
-            if d_from and d < d_from:
-                continue
-            out.append(r)
-            newest_in_range = True
         dated = [r["when"].date() for r in rows if r["when"]]
-        if d_from and dated and max(dated) < d_from:
-            break  # toda la pagina es anterior al rango
-        if len(rows) < 100:
-            break
-        page += 1
-    else:
+        return bool(d_from and dated and max(dated) < d_from)
+
+    resp, rows = load(1)
+    total = to_int(resp.get("total_pages")) if isinstance(resp, dict) else None
+    last_page = min(limit, total) if total else limit
+    done = consume(rows) or len(rows) < 100
+    page, size = 2, 2  # batch size doubles up to FETCH_WORKERS, so short ranges stay cheap
+    if not done and last_page >= 2:
+        with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+            while not done and page <= last_page:
+                batch = range(page, min(page + size, last_page + 1))
+                for _, rows in pool.map(load, batch):
+                    if done:
+                        break
+                    done = consume(rows) or len(rows) < 100
+                page = batch[-1] + 1
+                size = min(size * 2, FETCH_WORKERS)
+    if not done and page > last_page and last_page == limit and (total is None or total > limit):
         warnings.append(f"Se alcanzo el limite de {limit} paginas; el historial puede estar truncado.")
-    out.sort(key=lambda r: r["when"] or datetime.min.replace(tzinfo=TZ), reverse=True)
+    out.sort(key=lambda r: r["when"] or EPOCH, reverse=True)
     return out, warnings
 
 
@@ -313,7 +344,7 @@ def parse_range(qs):
 
 
 # --------------------------------------------------------------------------
-# Bloques de salida
+# Output blocks
 # --------------------------------------------------------------------------
 def result(text, warnings=None, count=None):
     return {"text": text, "chars": len(text), "tokens": round(len(text) / 3.6),
@@ -339,12 +370,13 @@ def block_history(qs):
                 cur = d
                 lines.append(f"\n{d.isoformat() if d else 'Sin fecha'}")
             if r["kind"] == "movie":
-                y = f" ({r['year']})" if r["year"] else ""
+                y = f" [{r['year']}]" if r["year"] else ""
                 lines.append(f"- Pelicula: {r['title'] or '?'}{y}")
             else:
                 t = f" «{r['ep_title']}»" if r["ep_title"] else ""
                 lines.append(f"- {r['show'] or r['title'] or '?'} {ep_label(r)}{t}".replace("  ", " "))
     else:
+        # Compact: one line per show with episode runs; the word "visto" lives only in the header
         shows, movies = {}, []
         for r in events:
             if r["kind"] == "movie":
@@ -369,10 +401,10 @@ def block_history(qs):
 
 
 def progress_index():
-    """nombre_en_minusculas -> {'text', 'complete'} segun /history/progress."""
+    """lowercase show name -> {'text': 'N/M episodios vistos', 'complete': bool} from /history/progress."""
     idx = {}
     page = 1
-    while page <= 10:
+    while page <= 20:
         resp = scrob.get("/history/progress", {"type": "watched", "page": page, "page_size": 200})
         rows = items_of(resp)
         for row in rows:
@@ -399,23 +431,45 @@ def progress_index():
                 complete = True
             if text or flag is not None:
                 idx[str(name).lower()] = {"text": text, "complete": complete}
-        if len(rows) < 200:
+        total_pages = to_int(resp.get("total_pages")) if isinstance(resp, dict) else None
+        if not rows or (total_pages is not None and page >= total_pages) or (total_pages is None and len(rows) < 200):
             break
         page += 1
     return idx
 
 
+def next_up(cutoff):
+    """Next unwatched episode per show, newest activity first.
+
+    cutoff: only shows last watched on or after this date (None = no limit).
+    Returns (last_watched, normalized row, episodes_left) tuples.
+    """
+    out = []
+    for x in items_of(scrob.get("/history/next-up", {"limit": NEXT_UP_LIMIT})):
+        if not isinstance(x, dict) or x.get("dropped"):
+            continue
+        last = parse_dt(x.get("last_watched_at"))
+        if cutoff and (last is None or last.date() < cutoff):
+            continue
+        n = norm(x)
+        if n:
+            out.append((last, n, to_int(x.get("episodes_left"))))
+    out.sort(key=lambda t: t[0] or EPOCH, reverse=True)
+    return out
+
+
 def block_current(qs):
-    days = int((qs.get("days") or ["90"])[0])  # 0 = todo el historial
+    days = int((qs.get("days") or ["90"])[0])  # 0 = whole history
     with_next = (qs.get("next") or ["0"])[0] == "1"
     today = datetime.now(TZ).date()
-    events, warns = fetch_history(today - timedelta(days=days) if days else None, today)
+    cutoff = today - timedelta(days=days) if days else None
+    events, warns = fetch_history(cutoff, today)
     latest = {}
     for r in events:
         if r["kind"] != "episode":
             continue
         name = r["show"] or r["title"] or "?"
-        if name not in latest:  # eventos ya vienen del mas nuevo al mas viejo
+        if name not in latest:  # events are newest-first, so the first hit is the latest
             latest[name] = r
     try:
         prog = progress_index()
@@ -428,7 +482,7 @@ def block_current(qs):
     done = len(latest) - len(pending)
     scope = f"ultimos {days} dias" if days else "todo el historial"
     lines = [f"SERIES EN CURSO (con actividad en {scope}; solo con episodios por ver) - {len(pending)} series"]
-    for name, r in sorted(pending.items(), key=lambda kv: kv[1]["when"] or datetime.min.replace(tzinfo=TZ), reverse=True):
+    for name, r in sorted(pending.items(), key=lambda kv: kv[1]["when"] or EPOCH, reverse=True):
         t = f" «{r['ep_title']}»" if r["ep_title"] else ""
         when = f" (visto {fmt_short(r['when'])})" if r["when"] else ""
         info = (prog.get(name.lower()) or {}).get("text")
@@ -438,7 +492,7 @@ def block_current(qs):
         lines.append("Ninguna serie pendiente.")
     if done:
         warns.append(f"{done} series terminadas omitidas (estan en el Historial).")
-    # episodios a medias (continue-watching)
+    # episodes that were started but not finished
     try:
         cw = [x for x in items_of(scrob.get("/history/continue-watching", {"limit": 20})) if isinstance(x, dict)]
         if cw:
@@ -453,26 +507,26 @@ def block_current(qs):
     except ScrobError as e:
         warns.append(f"continue-watching no disponible: {e}")
     if with_next:
-        lines.append("\nPROXIMO A VER (puede contener spoilers del titulo del episodio)")
         try:
-            resp = scrob.get("/history/next-up", {"limit": 50})
-            rows = items_of(resp)
-            if not rows:
-                keys = list(resp.keys()) if isinstance(resp, dict) else type(resp).__name__
-                warns.append(f"next-up no devolvio elementos reconocibles (estructura: {keys}); revisa Diagnostico > next-up.")
-            for x in rows:
-                n = norm(x)
-                if not n:
-                    continue
-                t = f" «{n['ep_title']}»" if n["ep_title"] else ""
-                lab = ep_label(n)
-                lines.append(f"- {n['show'] or n['title'] or '?'}: {lab}{t}".rstrip(": "))
+            up = next_up(cutoff)  # same activity window as the list above
+            lines.append(f"\nPROXIMO A VER (series con actividad en {scope}; puede contener spoilers del titulo del episodio) - {len(up)} series")
+            for _, n, left in up:
+                label = " ".join(x for x in (ep_label(n), f"«{n['ep_title']}»" if n["ep_title"] else "") if x)
+                line = f"- {n['show'] or n['title'] or '?'}"
+                if label:
+                    line += f": {label}"
+                if left:
+                    line += f" - faltan {left}"
+                lines.append(line)
+            if not up:
+                lines.append("Ninguno.")
         except ScrobError as e:
             warns.append(f"next-up no disponible: {e}")
     return result("\n".join(lines), warns, len(pending))
 
 
 def block_upcoming(qs):
+    # from_off/to_off are day offsets relative to "today" (e.g. -1:1 = yesterday..tomorrow)
     if qs.get("from_off") and qs["from_off"][0] != "":
         off_a, off_b = int(qs["from_off"][0]), int((qs.get("to_off") or qs["from_off"])[0])
     else:
@@ -522,7 +576,7 @@ def _ratings_by_name():
 
 def block_series(qs):
     q = (qs.get("q") or [""])[0].strip()
-    exact = (qs.get("exact") or ["0"])[0] == "1"
+    exact = (qs.get("exact") or ["0"])[0] == "1"  # 1 = the user picked a suggestion
     if len(q) < 2:
         raise ScrobError("Escribe al menos 2 letras del nombre")
     events, warns = fetch_history(q=q, max_pages=50)
@@ -544,7 +598,7 @@ def block_series(qs):
     ratings = _ratings_by_name()
     lines = []
     for name, evs in shows.items():
-        evs.sort(key=lambda r: r["when"] or datetime.min.replace(tzinfo=TZ), reverse=True)
+        evs.sort(key=lambda r: r["when"] or EPOCH, reverse=True)
         pairs = [(r["season"], r["episode"]) for r in evs if r["season"] is not None and r["episode"] is not None]
         dated = [r["when"].date() for r in evs if r["when"]]
         last = evs[0]
@@ -578,37 +632,74 @@ def block_series(qs):
     return result("\n".join(lines).strip(), warns, sum(len(v) for v in shows.values()) + len(movies))
 
 
-_title_idx = {"t": 0.0, "data": []}
+# --------------------------------------------------------------------------
+# Title index for the search-box suggestions
+# --------------------------------------------------------------------------
+class TitleIndex:
+    """Every watched show/movie with its record count.
+
+    Building it means crawling the whole history, so it runs in the background
+    (also at startup). Requests never block on it: while the first build runs
+    the API answers "loading", and later refreshes serve the previous data.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.data = None
+        self.at = 0.0
+        self.building = False
+        self.error = None
+
+    def refresh_async(self):
+        with self.lock:
+            if self.building:
+                return
+            self.building = True
+        threading.Thread(target=self._build, daemon=True).start()
+
+    def _build(self):
+        try:
+            events, _ = fetch_history(use_cache=False)  # skip the query cache: this is a big one-off crawl
+            acc = {}
+            for r in events:
+                if r["kind"] == "episode":
+                    name, kind = r["show"] or r["title"], "serie"
+                else:
+                    name, kind = r["title"], "pelicula"
+                if name:
+                    acc[(name, kind)] = acc.get((name, kind), 0) + 1
+            self.data = [{"name": n, "kind": k, "count": c} for (n, k), c in acc.items()]
+            self.at = time.time()
+            self.error = None
+        except Exception as e:  # noqa: BLE001 - reported to the UI, retried on the next request
+            self.error = str(e)
+        finally:
+            self.building = False
+
+    def get(self):
+        if self.data is None or time.time() - self.at > INDEX_TTL:
+            self.refresh_async()
+        return self.data
 
 
-def title_index():
-    """Titulos vistos (series y peliculas) con su numero de registros; cache 5 min."""
-    if _title_idx["data"] and time.time() - _title_idx["t"] < 300:
-        return _title_idx["data"]
-    events, _ = fetch_history()
-    acc = {}
-    for r in events:
-        if r["kind"] == "episode":
-            name, kind = r["show"] or r["title"], "serie"
-        else:
-            name, kind = r["title"], "pelicula"
-        if name:
-            e = acc.setdefault((name, kind), 0)
-            acc[(name, kind)] = e + 1
-    data = [{"name": n, "kind": k, "count": c} for (n, k), c in acc.items()]
-    _title_idx.update(t=time.time(), data=data)
-    return data
+title_index = TitleIndex()
 
 
 def suggest(qs):
     q = (qs.get("q") or [""])[0].strip().lower()
+    data = title_index.get()  # also (re)starts the build, so an empty query works as a warm-up
+    if data is None:
+        return {"items": [], "loading": title_index.error is None, "error": title_index.error}
     if len(q) < 2:
-        return {"items": []}
-    hits = [x for x in title_index() if q in x["name"].lower()]
+        return {"items": [], "loading": False}
+    hits = [x for x in data if q in x["name"].lower()]
     hits.sort(key=lambda x: (not x["name"].lower().startswith(q), -x["count"], x["name"].lower()))
-    return {"items": hits[:10]}
+    return {"items": hits[:10], "loading": False}
 
 
+# --------------------------------------------------------------------------
+# Raw endpoints for the Diagnostics tab (trimmed so they stay readable)
+# --------------------------------------------------------------------------
 RAW = {
     "history": ("/history", {"page": 1, "page_size": 5}),
     "next-up": ("/history/next-up", {"limit": 3}),
@@ -621,11 +712,11 @@ RAW = {
 }
 
 
-def trim(o, n=4, depth=0):
+def trim(o, n=4):
     if isinstance(o, list):
-        return [trim(x, n, depth + 1) for x in o[:n]]
+        return [trim(x, n) for x in o[:n]]
     if isinstance(o, dict):
-        return {k: trim(v, n, depth + 1) for k, v in o.items()}
+        return {k: trim(v, n) for k, v in o.items()}
     return o
 
 
@@ -695,5 +786,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"scrob-export escuchando en :{PORT}", flush=True)
+    print(f"scrob-export listening on :{PORT}", flush=True)
+    title_index.refresh_async()  # warm the search index so the first keystrokes are instant
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()

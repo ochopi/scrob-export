@@ -48,7 +48,10 @@
   #sugg.on { display:block; }
   #sugg div { padding:8px 12px; cursor:pointer; display:flex; justify-content:space-between; gap:12px; }
   #sugg div:hover, #sugg div.sel { background:var(--line); }
+  #sugg div.note { cursor:default; color:var(--muted); font-size:13px; }
+  #sugg div.note:hover { background:transparent; }
   #sugg small { color:var(--muted); white-space:nowrap; }
+  .sub { border-left:2px solid var(--line); padding-left:12px; margin:0 0 10px 4px; }
   .hide { display:none; }
 </style>
 </head>
@@ -69,22 +72,18 @@
   </nav>
 
   <div class="card">
-    <!-- En curso -->
+    <!-- Currently watching -->
     <div class="pane on" id="p-current">
       <div class="row">
         <label>Actividad en los últimos</label>
-        <select id="cur-days">
-          <option value="7">7 días</option><option value="30">30 días</option><option value="60">60 días</option>
-          <option value="90" selected>90 días</option><option value="180">6 meses</option>
-          <option value="365">1 año</option><option value="0">Todo</option>
-        </select>
+        <select id="cur-days"></select>
         <label><input type="checkbox" id="cur-next"> incluir «próximo a ver» (puede dar spoilers)</label>
       </div>
       <button class="primary" data-run="current">Obtener y copiar</button>
-      <p class="hint">Series con episodios por ver y su último episodio visto. Las terminadas no aparecen (están en el Historial).</p>
+      <p class="hint">Series con episodios por ver y su último episodio visto. Las terminadas no aparecen (están en el Historial). «Próximo a ver» respeta el mismo intervalo.</p>
     </div>
 
-    <!-- Historial -->
+    <!-- History -->
     <div class="pane" id="p-history">
       <div class="row chips" data-range="h">
         <button class="chip" data-d="1">1 día</button>
@@ -105,38 +104,40 @@
       <p class="hint">Rangos largos: usa Compacto. “Todo” recorre todo el historial (puede tardar unos segundos).</p>
     </div>
 
-    <!-- Serie -->
+    <!-- Single title -->
     <div class="pane" id="p-series">
       <div class="row">
         <div class="sbox">
-          <input id="s-q" autocomplete="off" placeholder="Escribe parte del nombre (ej. Slime)">
+          <input id="s-q" autocomplete="off" placeholder="Escribe parte del nombre de la serie o película">
           <div id="sugg"></div>
         </div>
       </div>
       <button class="primary" data-run="series">Obtener y copiar</button>
-      <p class="hint">Si lo dejas libre, trae todo lo que coincida. Si eliges una sugerencia, solo esa serie o película.</p>
+      <p class="hint">Si lo dejas libre, trae todo lo que coincida. Si eliges una sugerencia (flechas + Enter), solo esa serie o película. Enter sin sugerencia seleccionada ejecuta la consulta.</p>
     </div>
 
-    <!-- Estrenos -->
+    <!-- Upcoming -->
     <div class="pane" id="p-upcoming">
       <div class="row">
         <label>Periodo</label>
-        <select id="u-range">
-          <option value="-1:-1">Ayer</option><option value="0:0">Hoy</option><option value="1:1">Mañana</option>
-          <option value="0:7" selected>7 días</option><option value="0:14">14 días</option>
-        </select>
+        <select id="u-range"></select>
       </div>
       <button class="primary" data-run="upcoming">Obtener y copiar</button>
     </div>
 
-    <!-- Paquete -->
+    <!-- Bundle: everything it needs lives here -->
     <div class="pane" id="p-bundle">
-      <div class="row">
-        <label><input type="checkbox" id="b-cur" checked> En curso (usa los ajustes de su pestaña)</label>
-        <label><input type="checkbox" id="b-hist" checked> Historial</label>
-        <label><input type="checkbox" id="b-up"> Estrenos (usa los ajustes de su pestaña)</label>
+      <div class="row"><label><input type="checkbox" id="b-cur" checked> En curso</label></div>
+      <div class="sub" id="b-curopts">
+        <div class="row">
+          <label>Actividad en los últimos</label>
+          <select id="bc-days"></select>
+          <label><input type="checkbox" id="bc-next"> incluir «próximo a ver»</label>
+        </div>
       </div>
-      <div id="b-histopts">
+
+      <div class="row"><label><input type="checkbox" id="b-hist" checked> Historial</label></div>
+      <div class="sub" id="b-histopts">
         <div class="row chips" data-range="b">
           <button class="chip" data-d="1">1 día</button>
           <button class="chip on" data-d="7">7 días</button>
@@ -153,6 +154,15 @@
           </label>
         </div>
       </div>
+
+      <div class="row"><label><input type="checkbox" id="b-up"> Estrenos</label></div>
+      <div class="sub hide" id="b-upopts">
+        <div class="row">
+          <label>Periodo</label>
+          <select id="bu-range"></select>
+        </div>
+      </div>
+
       <div class="row">
         <button class="ghost" id="b-toggle">Editar encabezado anti-spoilers</button>
       </div>
@@ -164,7 +174,7 @@
       <p class="hint">El encabezado se antepone siempre, aunque esté oculto. Se guarda en este navegador.</p>
     </div>
 
-    <!-- Diagnóstico -->
+    <!-- Diagnostics -->
     <div class="pane" id="p-diag">
       <div class="row"><select id="d-name"></select></div>
       <button class="primary" data-run="diag">Ver respuesta cruda y copiar</button>
@@ -187,12 +197,27 @@ const $ = (s) => document.querySelector(s);
 const DEFAULT_HEAD =
 `Contexto: esto es lo que he visto hasta ahora. NO reveles nada posterior a estos episodios (ni tramas, ni personajes, ni finales). Si no estás seguro de si algo es spoiler, pregúntame antes. La numeración de temporadas/episodios sigue la base de datos TMDB.`;
 
+// Option lists shared by the standalone tabs and the bundle tab.
+// Days: 0 = whole history. Upcoming: "fromOffset:toOffset" in days relative to today.
+const CUR_OPTS = [[7, "7 días"], [15, "15 días"], [30, "30 días"], [60, "60 días"], [90, "90 días"],
+                  [180, "6 meses"], [365, "1 año"], [0, "Todo"]];
+const UP_OPTS = [["-1:-1", "Ayer"], ["0:0", "Hoy"], ["1:1", "Mañana"], ["-1:1", "3 días"],
+                 ["0:7", "7 días"], ["0:14", "14 días"]];
+function fill(sel, opts, selected) {
+  opts.forEach(([v, label]) => {
+    const o = document.createElement("option"); o.value = v; o.textContent = label;
+    if (String(v) === String(selected)) o.selected = true; $(sel).appendChild(o);
+  });
+}
+fill("#cur-days", CUR_OPTS, 90); fill("#bc-days", CUR_OPTS, 90);
+fill("#u-range", UP_OPTS, "0:7"); fill("#bu-range", UP_OPTS, "0:7");
+
 let lastText = "";
 
 function pad(n){ return String(n).padStart(2,"0"); }
 function iso(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
 
-// selector de rango reutilizable (prefijo "h" = historial, "b" = paquete)
+// Date-range picker with quick chips. pfx: "h" = History tab, "b" = Bundle tab.
 function bindRange(pfx) {
   const chips = document.querySelectorAll('[data-range="' + pfx + '"] .chip');
   const setRange = (days) => {
@@ -225,6 +250,7 @@ async function api(path, params) {
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); return true; }
   catch (e) {
+    // Fallback for non-secure contexts (plain http): select the output box and use execCommand
     try {
       const ta = $("#out"); ta.removeAttribute("readonly"); ta.focus(); ta.select();
       const ok = document.execCommand("copy"); ta.setAttribute("readonly", ""); return ok;
@@ -250,12 +276,18 @@ function show(res) {
   (res.warnings || []).forEach(w => add("⚠ " + w, "warn"));
 }
 
-// sugerencias de la pestaña "Una serie"
-let sExact = false, sTimer = null, sSel = -1, sItems = [];
+// ---- Search box with suggestions (Una serie tab) ----
+// sSeq invalidates in-flight suggestion requests whenever the text changes or a query is run.
+let sExact = false, sTimer = null, sSel = -1, sItems = [], sSeq = 0;
 function hideSugg() { $("#sugg").classList.remove("on"); sSel = -1; }
 function pickSugg(i) {
   const it = sItems[i]; if (!it) return;
-  $("#s-q").value = it.name; sExact = true; hideSugg();
+  $("#s-q").value = it.name; sExact = true; sSeq++; hideSugg();
+}
+function renderNote(text) {
+  const box = $("#sugg"); box.innerHTML = "";
+  const d = document.createElement("div"); d.className = "note"; d.textContent = text;
+  box.appendChild(d); box.classList.add("on"); sItems = []; sSel = -1;
 }
 function renderSugg(items) {
   sItems = items; const box = $("#sugg"); box.innerHTML = "";
@@ -269,46 +301,69 @@ function renderSugg(items) {
   });
   box.classList.add("on"); sSel = -1;
 }
+// The server builds its title index in the background; while it is not ready it answers
+// "loading", so keep asking (max ~40 s) instead of dropping the keystrokes.
+async function fetchSugg(q, seq, tries) {
+  try {
+    const j = await api("/api/suggest", { q });
+    if (seq !== sSeq) return;
+    if (j.loading && tries < 40) {
+      renderNote("Indexando tu historial… (solo la primera vez)");
+      setTimeout(() => { if (seq === sSeq) fetchSugg(q, seq, tries + 1); }, 1000);
+      return;
+    }
+    if (j.error && !(j.items || []).length) { renderNote("No se pudo indexar: " + j.error); return; }
+    renderSugg(j.items || []);
+  } catch (e) { if (seq === sSeq) hideSugg(); }
+}
 $("#s-q").addEventListener("input", () => {
-  sExact = false; clearTimeout(sTimer);
+  sExact = false; clearTimeout(sTimer); const seq = ++sSeq;
   const q = $("#s-q").value.trim();
   if (q.length < 2) { hideSugg(); return; }
-  sTimer = setTimeout(async () => {
-    try { const j = await api("/api/suggest", { q }); if ($("#s-q").value.trim() === q) renderSugg(j.items || []); }
-    catch (e) { hideSugg(); }
-  }, 200);
+  sTimer = setTimeout(() => fetchSugg(q, seq, 0), 150);
 });
 $("#s-q").addEventListener("keydown", (e) => {
-  const rows = [...document.querySelectorAll("#sugg div")];
-  if (!rows.length || !$("#sugg").classList.contains("on")) return;
+  const open = $("#sugg").classList.contains("on") && sItems.length > 0;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault(); sSel = (sSel + (e.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+    if (!open) { if (sItems.length) { renderSugg(sItems); } else return; }
+    e.preventDefault();
+    const rows = [...document.querySelectorAll("#sugg div")];
+    sSel = (sSel + (e.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
     rows.forEach((r, i) => r.classList.toggle("sel", i === sSel));
-  } else if (e.key === "Enter" && sSel >= 0) { e.preventDefault(); pickSugg(sSel); }
-  else if (e.key === "Escape") hideSugg();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (open && sSel >= 0) { pickSugg(sSel); return; }   // first Enter accepts the highlighted suggestion
+    clearTimeout(sTimer); sSeq++; hideSugg();            // otherwise Enter runs the query, like the button
+    document.querySelector('[data-run="series"]').click();
+  } else if (e.key === "Escape") hideSugg();
 });
 $("#s-q").addEventListener("blur", () => setTimeout(hideSugg, 120));
 
+// ---- Request builders. pfx selects which set of controls to read (tab vs bundle). ----
+const callCurrent = (p) => api("/api/current",
+  { days: $("#" + p + "-days").value, next: $("#" + p + "-next").checked ? 1 : 0 });
+const callHistory = (p) => api("/api/history",
+  { from: $("#" + p + "-from").value, to: $("#" + p + "-to").value, format: $("#" + p + "-fmt").value });
+const callUpcoming = (p) => {
+  const [a, b] = $("#" + p + "-range").value.split(":");
+  return api("/api/upcoming", { from_off: a, to_off: b });
+};
+
 async function build(kind) {
-  if (kind === "current")
-    return api("/api/current", { days: $("#cur-days").value, next: $("#cur-next").checked ? 1 : 0 });
-  if (kind === "history")
-    return api("/api/history", { from: $("#h-from").value, to: $("#h-to").value, format: $("#h-fmt").value });
+  if (kind === "current") return callCurrent("cur");
+  if (kind === "history") return callHistory("h");
   if (kind === "series") return api("/api/series", { q: $("#s-q").value, exact: sExact ? 1 : 0 });
-  if (kind === "upcoming") {
-    const [a, b] = $("#u-range").value.split(":");
-    return api("/api/upcoming", { from_off: a, to_off: b });
-  }
+  if (kind === "upcoming") return callUpcoming("u");
   if (kind === "diag") return api("/api/raw", { name: $("#d-name").value });
   if (kind === "bundle") {
+    const jobs = [];
+    if ($("#b-cur").checked) jobs.push(callCurrent("bc"));
+    if ($("#b-hist").checked) jobs.push(callHistory("b"));
+    if ($("#b-up").checked) jobs.push(callUpcoming("bu"));
+    if (!jobs.length) throw new Error("Marca al menos un bloque");
     const parts = [], warnings = [];
     const head = $("#b-head").value.trim();
     if (head) parts.push(head);
-    const jobs = [];
-    if ($("#b-cur").checked) jobs.push(build("current"));
-    if ($("#b-hist").checked)
-      jobs.push(api("/api/history", { from: $("#b-from").value, to: $("#b-to").value, format: $("#b-fmt").value }));
-    if ($("#b-up").checked) jobs.push(build("upcoming"));
     for (const r of await Promise.all(jobs)) { parts.push(r.text); warnings.push(...(r.warnings || [])); }
     const text = parts.join("\n\n---\n\n");
     return { text, chars: text.length, tokens: Math.round(text.length / 3.6), count: null, warnings };
@@ -328,15 +383,19 @@ document.querySelectorAll("[data-run]").forEach(btn => btn.onclick = async () =>
 
 $("#copy-again").onclick = async () => toast((await copyText(lastText)) ? "Copiado" : "No se pudo copiar", false);
 
-// encabezado anti-spoiler: oculto por defecto, persistente y siempre aplicado
+// Anti-spoiler header: hidden by default, kept in localStorage, always prepended to the bundle
 try { $("#b-head").value = localStorage.getItem("scrobExportHead") || DEFAULT_HEAD; } catch (e) { $("#b-head").value = DEFAULT_HEAD; }
 $("#b-head").oninput = () => { try { localStorage.setItem("scrobExportHead", $("#b-head").value); } catch (e) {} };
 $("#b-reset").onclick = () => { $("#b-head").value = DEFAULT_HEAD; try { localStorage.removeItem("scrobExportHead"); } catch (e) {} };
 $("#b-toggle").onclick = () => {
-  const w = $("#b-headwrap"); const hidden = w.classList.toggle("hide");
+  const hidden = $("#b-headwrap").classList.toggle("hide");
   $("#b-toggle").textContent = hidden ? "Editar encabezado anti-spoilers" : "Ocultar encabezado";
 };
-$("#b-hist").onchange = () => $("#b-histopts").classList.toggle("hide", !$("#b-hist").checked);
+
+// Each bundle block shows its options only while its checkbox is ticked
+[["#b-cur", "#b-curopts"], ["#b-hist", "#b-histopts"], ["#b-up", "#b-upopts"]].forEach(([cb, box]) => {
+  $(cb).onchange = () => $(box).classList.toggle("hide", !$(cb).checked);
+});
 
 ["history","next-up","continue-watching","progress","calendar","ratings","shows","lists"].forEach(n => {
   const o = document.createElement("option"); o.value = n; o.textContent = n; $("#d-name").appendChild(o);
@@ -344,6 +403,7 @@ $("#b-hist").onchange = () => $("#b-histopts").classList.toggle("hide", !$("#b-h
 
 api("/api/status").then(() => { $("#status").textContent = "conectado a Scrob"; $("#status").className = "ok"; })
   .catch(e => { $("#status").textContent = e.message; $("#status").className = "bad"; });
+api("/api/suggest", { q: "" }).catch(() => {});  // warm-up: makes the server build the title index now
 </script>
 </body>
 </html>

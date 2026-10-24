@@ -1,53 +1,60 @@
 # scrob-export
 
-Pequeña web que consulta la API de [Scrob](https://github.com/ellite/scrob) y copia al portapapeles resúmenes de texto (en curso, historial, una serie, estrenos) listos para pegar en una IA y conversar sin spoilers.
+A tiny web page that reads the [Scrob](https://github.com/ellite/scrob) API and copies plain-text summaries of your watch data (currently watching, history, a single title, upcoming episodes) to the clipboard, ready to paste into an AI chat so you can talk about your shows without re-typing where you are and without spoilers.
 
-Solo usa la librería estándar de Python; no necesita dependencias.
+Python standard library only, no dependencies.
 
-## Bloques
+> The web UI and the generated text are in Spanish (the text is meant to be pasted into a Spanish-language chat). Code, comments and docs are in English.
 
-| Pestaña     | Qué copia |
-| ----------- | --------- |
-| En curso    | Series con episodios por ver: último episodio visto (T/E, título, fecha) y progreso. Las terminadas se omiten. «Próximo a ver» es opcional (puede dar spoilers). |
-| Historial   | Rango de fechas (atajos o desde/hasta). Formato compacto (por serie) o detallado (por día). |
-| Una serie   | Lo visto de una serie o película, con sugerencias mientras escribes. Sin elegir sugerencia, trae todo lo que coincida. |
-| Estrenos    | Ayer, hoy, mañana, 7 o 14 días (calendario de Scrob). |
-| Paquete     | Encabezado anti-spoilers (editable) + los bloques que marques en un solo copiado. |
-| Diagnóstico | Respuesta cruda (recortada) de cada endpoint de Scrob, para depurar. |
+## Tabs
 
-## Variables de entorno
+| Tab | What it copies |
+| --- | --- |
+| Currently watching (*En curso*) | Shows you still have episodes left in: last watched episode (S/E, title, date) and progress. Finished shows are omitted. Window: 7, 15, 30, 60, 90 days, 6 months, 1 year or everything. Optional "next up" list (may contain episode-title spoilers) that uses the same window. |
+| History (*Historial*) | Date range (quick chips or from/to pickers). Compact (one line per show) or detailed (per day) format. |
+| Single title (*Una serie*) | Everything you watched of a show or movie, with search-as-you-type suggestions. Pick a suggestion (arrows + Enter) to filter to exactly that title; leave the text free to get everything that matches. Enter runs the query. |
+| Upcoming (*Estrenos*) | Yesterday, today, tomorrow, 3 days (yesterday to tomorrow), 7 or 14 days, from Scrob's calendar. |
+| Bundle (*Paquete*) | An editable anti-spoiler header (hidden by default, always prepended) plus whichever blocks you tick, in a single copy. Each block has its own options, shown only while its checkbox is ticked. |
+| Diagnostics (*Diagnóstico*) | Trimmed raw response of each Scrob endpoint, for debugging. |
 
-| Variable         | Obligatoria | Default | Descripción |
-| ---------------- | :---------: | ------- | ----------- |
-| `SCROB_URL`      | Sí          | —       | URL base de Scrob (sin barra final) |
-| `SCROB_USERNAME` | Sí          | —       | Usuario de Scrob |
-| `SCROB_PASSWORD` | Sí          | —       | Contraseña de Scrob |
-| `HOST_PORT`      | No          | `7329`  | Puerto externo publicado por Docker |
-| `TZ`             | No          | `UTC`   | Zona horaria (ej. `America/El_Salvador`) para fechas y rangos |
-| `MAX_PAGES`      | No          | `200`   | Tope de páginas de historial (×100 eventos) |
-| `CACHE_TTL`      | No          | `60`    | Segundos de caché por consulta |
+Every result shows its size in characters and approximate tokens, with a warning when it gets very long.
 
-## Despliegue
+## Environment variables
+
+| Variable | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `SCROB_URL` | yes | – | Base URL of your Scrob instance, no trailing slash |
+| `SCROB_USERNAME` | yes | – | Scrob username |
+| `SCROB_PASSWORD` | yes | – | Scrob password |
+| `HOST_PORT` | no | `7329` | Port published on the host (the container always listens on 7329) |
+| `TZ` | no | `UTC` | Time zone used for dates and ranges, e.g. `America/El_Salvador` |
+| `MAX_PAGES` | no | `200` | Cap on history pages fetched (100 events each) |
+| `CACHE_TTL` | no | `60` | Seconds to cache each Scrob query |
+| `FETCH_WORKERS` | no | `6` | History pages fetched in parallel |
+
+## Deploy
 
 ### Docker Compose
 
 ```bash
-cp .env.example .env   # editar valores
+cp .env.example .env   # edit the values
 docker compose up -d --build
 ```
 
-### Portainer (desde repositorio)
+### Portainer (from a Git repository)
 
-1. **Stacks → Add stack → Repository** y apunta al repo (rama y `docker-compose.yml`).
-2. En **Environment variables** define `SCROB_URL`, `SCROB_USERNAME`, `SCROB_PASSWORD` (y opcionalmente `HOST_PORT`, `TZ`).
-3. Deploy. Tras cada `push`, usa **Pull and redeploy** y asegúrate de que la imagen se reconstruye (el compose usa `build: .`).
+1. **Stacks → Add stack → Repository**, point it at this repo and `docker-compose.yml`.
+2. Under **Environment variables** set `SCROB_URL`, `SCROB_USERNAME`, `SCROB_PASSWORD` (and optionally `HOST_PORT`, `TZ`).
+3. Deploy. After each push use **Pull and redeploy** and make sure the image is rebuilt (the compose file uses `build: .`).
 
-Comprobación: `http://<host>:<HOST_PORT>/health` → `{"ok": true}`.
+Health check: `http://<host>:<HOST_PORT>/health` → `{"ok": true}`.
 
-## Notas
+## Notes
 
-- **Se recomienda servirlo detrás de HTTPS**: sin él el navegador bloquea el acceso al portapapeles.
-- La app no tiene autenticación propia: no la expongas a Internet. Úsala solo en una red privada o VPN.
-- Autenticación contra Scrob: login web (formulario) + cookie de sesión; se renueva sola si caduca. Si cambias la contraseña de Scrob, actualiza `SCROB_PASSWORD`.
-- El OpenAPI de Scrob no describe el formato de sus respuestas, por lo que el lector es tolerante. Si un bloque sale con campos vacíos, revisa la pestaña **Diagnóstico**.
-- La numeración T/E sigue a TMDB; en anime puede diferir de otras fuentes.
+- **Serve it over HTTPS.** Browsers only allow clipboard access in a secure context (a plain-HTTP fallback exists but is less reliable).
+- There is no authentication of its own: do not expose it to the internet. Keep it on a private network or behind a VPN.
+- Authentication against Scrob uses the web login form plus the session cookie, and renews itself when the session expires. If you change your Scrob password, update `SCROB_PASSWORD`.
+- Scrob's OpenAPI does not describe response bodies, so the reader is tolerant about field names. If a block comes out with empty fields, check the **Diagnostics** tab.
+- Season/episode numbering follows TMDB; for anime it can differ from other sources.
+- The search suggestions come from an index of your history that the server builds in the background at startup (refreshed every 5 minutes). With a large history the first build takes a few seconds; until then the box shows "Indexando…".
+- Scrob has no date filter on the history endpoint, so it is paged 100 at a time and the crawl stops once it leaves the requested range. Long ranges ("Todo") fetch pages in parallel.

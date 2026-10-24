@@ -1,6 +1,6 @@
 FROM python:3.13-alpine
 
-# tzdata para que la variable TZ funcione
+# tzdata is needed for the TZ environment variable to take effect
 RUN apk add --no-cache tzdata
 
 WORKDIR /app
