@@ -5,6 +5,7 @@ Standard library only. It logs in to Scrob through the web login form (the same
 way a browser does), keeps the session cookie, and serves a few JSON endpoints
 plus one static page.
 """
+import contextvars
 import gzip
 import json
 import os
@@ -27,6 +28,14 @@ try:
     TZ = ZoneInfo(os.environ.get("TZ") or "UTC")
 except Exception:  # unknown zone or no tzdata installed: fall back to UTC
     TZ = timezone.utc
+
+# The browser tells us its own time zone on every request (?tz=...), so dates are right for whoever is
+# looking at the page. TZ above is only the fallback when the browser sends nothing usable.
+_request_tz = contextvars.ContextVar("request_tz", default=None)
+
+
+def cur_tz():
+    return _request_tz.get() or TZ
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "200"))  # 200 pages x 100 events = 20,000 events
 CACHE_TTL = int(os.environ.get("CACHE_TTL", "60"))  # seconds, per Scrob query
 FETCH_WORKERS = int(os.environ.get("FETCH_WORKERS", "6"))  # parallel history page fetches
@@ -181,15 +190,15 @@ def items_of(resp):
     return []
 
 
-def parse_dt(v):
-    """Parse an ISO timestamp. Naive values are UTC (that is what Scrob sends)."""
+def parse_dt(v, tz=None):
+    """Parse an ISO timestamp into the request's time zone. Naive values are UTC (what Scrob sends)."""
     if not v:
         return None
     try:
         dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(TZ)
+        return dt.astimezone(tz or cur_tz())
     except ValueError:
         return None
 
@@ -201,8 +210,11 @@ def to_int(v):
         return None
 
 
-def norm(e):
-    """Flatten one event/row into a plain dict. Returns None if it is not a dict."""
+def norm(e, tz=None):
+    """Flatten one event/row into a plain dict. Returns None if it is not a dict.
+
+    tz must be passed explicitly when called from worker threads (they do not see the request's context).
+    """
     if not isinstance(e, dict):
         return None
     mtype = pick(e, "media_type", "type", "media.media_type", "media.type")
@@ -220,7 +232,7 @@ def norm(e):
     if year is None:
         release = pick(e, "release_date", "media.release_date")
         year = str(release)[:4] if release else None
-    when = parse_dt(pick(e, "watched_at", "created_at", "date", "timestamp", "media.watched_at"))
+    when = parse_dt(pick(e, "watched_at", "created_at", "date", "timestamp", "media.watched_at"), tz)
     is_ep = (str(mtype).lower() == "episode") or (season is not None and ep is not None)
     if is_ep and not show and title and ep_title and title != ep_title:
         show = title  # some payloads put the show name in "title"
@@ -247,6 +259,11 @@ def fmt_date(d):
 
 def fmt_short(d):
     return f"{d.day} {MONTHS[d.month - 1]}"
+
+
+def fmt_dt(dt):
+    """'25 oct 2026 21:52' (already in the viewer's zone; minutes, no seconds)"""
+    return f"{fmt_date(dt)} {dt:%H:%M}"
 
 
 def runs(nums):
@@ -299,10 +316,11 @@ def fetch_history(d_from=None, d_to=None, q=None, max_pages=None, use_cache=True
     """
     limit = max_pages or MAX_PAGES
     out, warnings = [], []
+    tz = cur_tz()  # captured here: the page loaders below run in pool threads
 
     def load(page):
         resp = scrob.get("/history", {"page": page, "page_size": 100, "q": q}, use_cache=use_cache)
-        return resp, [r for r in map(norm, items_of(resp)) if r]
+        return resp, [r for r in (norm(x, tz) for x in items_of(resp)) if r]
 
     def consume(rows):
         """Keep the rows inside the range. Return True once the range is exhausted."""
@@ -335,7 +353,7 @@ def fetch_history(d_from=None, d_to=None, q=None, max_pages=None, use_cache=True
 
 
 def parse_range(qs):
-    today = datetime.now(TZ).date()
+    today = datetime.now(cur_tz()).date()
     d_to = date.fromisoformat(qs["to"][0]) if qs.get("to") and qs["to"][0] else today
     d_from = date.fromisoformat(qs["from"][0]) if qs.get("from") and qs["from"][0] else d_to - timedelta(days=6)
     if d_from > d_to:
@@ -461,7 +479,7 @@ def next_up(cutoff):
 def block_current(qs):
     days = int((qs.get("days") or ["90"])[0])  # 0 = whole history
     with_next = (qs.get("next") or ["0"])[0] == "1"
-    today = datetime.now(TZ).date()
+    today = datetime.now(cur_tz()).date()
     cutoff = today - timedelta(days=days) if days else None
     events, warns = fetch_history(cutoff, today)
     latest = {}
@@ -533,10 +551,7 @@ def block_upcoming(qs):
         off_a, off_b = 0, int((qs.get("days") or ["7"])[0])
     resp = scrob.get("/calendar", {"cached_only": "true"})
     cal = resp.get("calendar", resp) if isinstance(resp, dict) else {}
-    if cal.get("today"):
-        base = date.fromisoformat(str(cal["today"])[:10])
-    else:
-        base = datetime.now(TZ).date()
+    base = datetime.now(cur_tz()).date()  # the viewer's "today" (Scrob's own "today" is its server's date)
     d_a, d_b = base + timedelta(days=off_a), base + timedelta(days=off_b)
     rows = []
     for e in cal.get("entries", []) or items_of(cal):
@@ -577,6 +592,7 @@ def _ratings_by_name():
 def block_series(qs):
     q = (qs.get("q") or [""])[0].strip()
     exact = (qs.get("exact") or ["0"])[0] == "1"  # 1 = the user picked a suggestion
+    detailed = (qs.get("format") or ["compact"])[0] == "detailed"  # one line per episode, with date and time
     if len(q) < 2:
         raise ScrobError("Escribe al menos 2 letras del nombre")
     events, warns = fetch_history(q=q, max_pages=50)
@@ -604,17 +620,26 @@ def block_series(qs):
         last = evs[0]
         lines.append(f"SERIE: {name}")
         lines.append(f"- Visto: {season_runs(pairs)}")
-        if dated:
-            lines.append(f"- Primera vez: {fmt_date(min(dated))} / Ultima vez: {fmt_date(max(dated))}")
-        t = f" «{last['ep_title']}»" if last["ep_title"] else ""
-        lines.append(f"- Ultimo visto: {ep_label(last)}{t}")
+        if not detailed:
+            if dated:
+                lines.append(f"- Primera vez: {fmt_date(min(dated))} / Ultima vez: {fmt_date(max(dated))}")
+            t = f" «{last['ep_title']}»" if last["ep_title"] else ""
+            lines.append(f"- Ultimo visto: {ep_label(last)}{t}")
         rr = ratings.get(name.lower())
         if rr:
             lines.append("- Mis puntuaciones: " + ", ".join(
                 f"{(ep_label(x) or 'serie')}={x['rating']}" for x in rr[:12]))
-        recent = [r for r in evs[:5] if r["ep_title"]]
-        if recent:
-            lines.append("- Ultimos episodios: " + "; ".join(f"{ep_label(r)} «{r['ep_title']}»" for r in recent))
+        if detailed:
+            # The show name is the heading, so each line only carries episode, title and when it was watched
+            lines.append("Episodios (en el orden en que los vi):")
+            for r in reversed(evs):  # evs is newest-first
+                label = " ".join(x for x in (ep_label(r), f"«{r['ep_title']}»" if r["ep_title"] else "") if x)
+                when = f" ({fmt_dt(r['when'])})" if r["when"] else ""
+                lines.append(f"- {label or '?'}{when}")
+        else:
+            recent = [r for r in evs[:5] if r["ep_title"]]
+            if recent:
+                lines.append("- Ultimos episodios: " + "; ".join(f"{ep_label(r)} «{r['ep_title']}»" for r in recent))
         lines.append("")
     seen_movies = {}
     for r in movies:
@@ -622,7 +647,8 @@ def block_series(qs):
     for title, evs in seen_movies.items():
         y = f" ({evs[0]['year']})" if evs[0]["year"] else ""
         lines.append(f"PELICULA: {title}{y}")
-        dates = ", ".join(fmt_date(r["when"].date()) for r in evs if r["when"])
+        fmt = fmt_dt if detailed else (lambda d: fmt_date(d.date()))
+        dates = ", ".join(fmt(r["when"]) for r in evs if r["when"])
         if dates:
             lines.append(f"- Vista: {dates}")
         rr = ratings.get(title.lower())
@@ -760,6 +786,13 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(u.query)
         p = u.path
+        tzname = (qs.get("tz") or [""])[0]
+        _request_tz.set(None)
+        if tzname:
+            try:
+                _request_tz.set(ZoneInfo(tzname))
+            except Exception:  # unknown zone name: keep the default
+                pass
         try:
             if p == "/health":
                 return self._send(200, {"ok": True})

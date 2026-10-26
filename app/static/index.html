@@ -105,7 +105,11 @@
           <div id="sugg"></div>
         </div>
       </div>
+      <div class="row">
+        <label><input type="checkbox" id="s-det"> Detallado</label>
+      </div>
       <button class="primary" data-run="series">Obtener y copiar</button>
+      <p class="hint">Detallado: una línea por episodio con su fecha y hora de visionado.</p>
     </div>
 
     <!-- Upcoming -->
@@ -229,8 +233,10 @@ document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
   b.classList.add("on"); $("#p-" + b.dataset.tab).classList.add("on");
 });
 
+// The server converts Scrob's UTC timestamps with this zone, so "today" and the day grouping match your clock.
+const TZ_NAME = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; } })();
 async function api(path, params) {
-  const qs = new URLSearchParams(params || {}).toString();
+  const qs = new URLSearchParams(Object.assign({}, params || {}, TZ_NAME ? { tz: TZ_NAME } : {})).toString();
   const r = await fetch(path + (qs ? "?" + qs : ""));
   const j = await r.json().catch(() => ({ error: "Respuesta inválida del servidor" }));
   if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
@@ -343,7 +349,8 @@ const callUpcoming = (p) => {
 async function build(kind) {
   if (kind === "current") return callCurrent("cur");
   if (kind === "history") return callHistory("h");
-  if (kind === "series") return api("/api/series", { q: $("#s-q").value, exact: sExact ? 1 : 0 });
+  if (kind === "series") return api("/api/series",
+    { q: $("#s-q").value, exact: sExact ? 1 : 0, format: $("#s-det").checked ? "detailed" : "compact" });
   if (kind === "upcoming") return callUpcoming("u");
   if (kind === "diag") return api("/api/raw", { name: $("#d-name").value });
   if (kind === "bundle") {
@@ -380,7 +387,7 @@ $("#b-head").oninput = () => { try { localStorage.setItem("scrobExportHead", $("
 $("#b-reset").onclick = () => { $("#b-head").value = DEFAULT_HEAD; try { localStorage.removeItem("scrobExportHead"); } catch (e) {} };
 $("#b-toggle").onclick = () => {
   const hidden = $("#b-headwrap").classList.toggle("hide");
-  $("#b-toggle").textContent = hidden ? "Editar encabezado anti-spoilers" : "Ocultar encabezado";
+  $("#b-toggle").textContent = hidden ? "Editar encabezado (para IA)" : "Ocultar encabezado";
 };
 
 // Each bundle block shows its options only while its checkbox is ticked
@@ -392,7 +399,7 @@ $("#b-toggle").onclick = () => {
   const o = document.createElement("option"); o.value = n; o.textContent = n; $("#d-name").appendChild(o);
 });
 
-api("/api/status").then(() => { $("#status").textContent = "conectado a Scrob"; $("#status").className = "ok"; })
+api("/api/status").then(() => { $("#status").textContent = "conectado a Scrob" + (TZ_NAME ? " · " + TZ_NAME : ""); $("#status").className = "ok"; })
   .catch(e => { $("#status").textContent = e.message; $("#status").className = "bad"; });
 api("/api/suggest", { q: "" }).catch(() => {});  // warm-up: makes the server build the title index now
 </script>

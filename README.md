@@ -10,7 +10,7 @@ Python standard library only, no dependencies.
 
 | Tab | What it copies |
 | --- | --- |
-| Search (*Buscar*) | Everything you watched of a show or movie, with search-as-you-type suggestions. Pick a suggestion (arrows + Enter) to filter to exactly that title; leave the text free to get everything that matches. Enter runs the query. |
+| Search (*Buscar*) | Everything you watched of a show or movie, with search-as-you-type suggestions. Pick a suggestion (arrows + Enter) to filter to exactly that title; leave the text free to get everything that matches. Enter runs the query. The *Detallado* checkbox lists every episode on its own line, under the title, with the date and time (to the minute) you watched it. |
 | Currently watching (*En curso*) | Shows you still have aired, unwatched episodes in: last watched episode (S/E, title, date) and progress. Finished shows are omitted. Window: 1 week, 2 weeks (default), 1 month, 60 days, 3 months, 6 months, 1 year or everything. Optional "next up" list (aired episodes only; may contain episode-title spoilers) that uses the same window. |
 | History (*Historial*) | Period dropdown (1 day to everything, default 2 weeks); choosing *Custom* reveals a from/to date picker. The *Detallado* checkbox switches from compact (one line per show) to detailed (per day). |
 | Upcoming (*Estrenos*) | Yesterday, today, tomorrow, 3 days (yesterday to tomorrow), 1 or 2 weeks (default), from Scrob's calendar. |
@@ -27,7 +27,7 @@ Every result shows its size in characters and approximate tokens, with a warning
 | `SCROB_USERNAME` | yes | – | Scrob username |
 | `SCROB_PASSWORD` | yes | – | Scrob password |
 | `HOST_PORT` | no | `7329` | Port published on the host (the container always listens on 7329) |
-| `TZ` | no | `UTC` | Time zone used for dates and ranges, e.g. `America/El_Salvador` |
+| `TZ` | no | `UTC` | Fallback time zone, used only when the browser does not report one. Normally the page sends the browser's own zone with every request, so dates and "today" match your local clock. |
 | `MAX_PAGES` | no | `200` | Cap on history pages fetched (100 events each) |
 | `CACHE_TTL` | no | `60` | Seconds to cache each Scrob query |
 | `FETCH_WORKERS` | no | `6` | History pages fetched in parallel |
